@@ -1,5 +1,5 @@
 """ GraspNet baseline model definition.
-    Author: chenxi-wang
++    Author: chenxi-wang
 """
 
 import os
@@ -21,7 +21,7 @@ from pointnet2.pointnet2_utils import furthest_point_sample, gather_operation
 
 
 class GraspNet(nn.Module):
-    def __init__(self, cylinder_radius=0.05, seed_feat_dim=512, is_training=True):
+    def __init__(self, cylinder_radius=0.05, seed_feat_dim=512, GRASPNESS_THRESHOLD=0.1, is_training=True):
         super().__init__()
         self.is_training = is_training
         self.seed_feature_dim = seed_feat_dim
@@ -35,6 +35,7 @@ class GraspNet(nn.Module):
         self.rotation = ApproachNet(self.num_view, seed_feature_dim=self.seed_feature_dim, is_training=self.is_training)
         self.crop = CloudCrop(nsample=16, cylinder_radius=cylinder_radius, seed_feature_dim=self.seed_feature_dim)
         self.swad = SWADNet(num_angle=self.num_angle, num_depth=self.num_depth)
+								self.GRASPNESS_THRESHOLD = GRASPNESS_THRESHOLD
 
     def forward(self, end_points):
         seed_xyz = end_points['point_clouds']  # use all sampled point cloud, B*Ns*3
@@ -51,8 +52,9 @@ class GraspNet(nn.Module):
         objectness_score = end_points['objectness_score']
         graspness_score = end_points['graspness_score'].squeeze(1)
         objectness_pred = torch.argmax(objectness_score, 1)
-        objectness_mask = (objectness_pred == 1)
-        graspness_mask = graspness_score > GRASPNESS_THRESHOLD
+								objectness_label = end_points['objectness_label']
+        objectness_mask = (objectness_pred == 1)&(objectness_label>0)
+        graspness_mask = graspness_score > self.GRASPNESS_THRESHOLD
         graspable_mask = objectness_mask & graspness_mask
 
         seed_features_graspable = []
@@ -118,6 +120,15 @@ def pred_decode(end_points):
         # merge preds
         grasp_height = 0.02 * torch.ones_like(grasp_score)
         obj_ids = -1 * torch.ones_like(grasp_score)
+
+								# add mask
+								mask = grasp_width < 0.095
+								mask = mask[:,0]
+								
+								mask_width = (grasp_width>0.8)&(grasp_width<0.95)
+								grasp_score[mask_width]=0.00001
+								grasp_width = torch.clamp(grasp_width, 0, 0.085)
+
         grasp_preds.append(
-            torch.cat([grasp_score, grasp_width, grasp_height, grasp_depth, grasp_rot, grasp_center, obj_ids], axis=-1))
+            torch.cat([grasp_score[mask], grasp_width[mask], grasp_height[mask], grasp_depth[mask], grasp_rot[mask], grasp_center[mask], obj_ids[mask]], axis=-1))
     return grasp_preds
